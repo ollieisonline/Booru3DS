@@ -35,6 +35,19 @@ static u32 s_frame = 1;
 static char s_err[192] = "";
 const char *g_big_err = s_err;
 
+static bool is_jpeg_url(const char *s)
+{
+    if (!s || !s[0])
+        return false;
+    const char *dot = strrchr(s, '.');
+    if (!dot)
+        return false;
+    const char *ext = dot + 1;
+    if (!ext[0])
+        return false;
+    return !strcasecmp(ext, "jpg") || !strcasecmp(ext, "jpeg");
+}
+
 static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
                                 int dw, int dh, u8 *dst)
 {
@@ -115,20 +128,29 @@ bool bigview_get(int post, C3D_Tex **tex, const Tex3DS_SubTexture **sub)
     return true;
 }
 
+static const char *pick_image_candidate(const Post *p)
+{
+    if (p->sample_ok && p->sample[0] && is_jpeg_url(p->sample))
+        return p->sample;
+    if (p->file[0] && is_jpeg_url(p->file))
+        return p->file;
+    if (p->preview[0] && is_jpeg_url(p->preview))
+        return p->preview;
+    if (p->sample_ok && p->sample[0])
+        return p->sample;
+    if (p->file[0])
+        return p->file;
+    if (p->preview[0])
+        return p->preview;
+    if (p->image[0])
+        return p->image;
+    return NULL;
+}
+
 static void build_url(int post, char *out, int outsz)
 {
-    Post *p = &posts[post];
-
-    const char *cand = NULL;
-
-    if (p->sample_ok && p->sample[0])
-        cand = p->sample;
-    else if (p->file[0])
-        cand = p->file;
-    else if (p->preview[0])
-        cand = p->preview;
-    else if (p->image[0])
-        cand = p->image;
+    const Post *p = &posts[post];
+    const char *cand = pick_image_candidate(p);
 
     if (!cand || !cand[0]) {
         out[0] = 0;
