@@ -4,6 +4,7 @@
 #include <sys/stat.h>
 
 #include "sdata.h"
+#include "net.h"
 
 #define SDATA_PATH "sdmc:/3ds/booru/save.dat"
 #define SDATA_TAGS 128
@@ -143,5 +144,3 @@ void sdata_hist_push(const char *tags)
 
     s_dirty = true;
 }
-
-																																																																																																																																																										
