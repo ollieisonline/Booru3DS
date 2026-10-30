@@ -46,6 +46,19 @@ static u32 s_frame = 1;
 static int s_page = -1;
 static tjhandle s_tj;
 
+static bool has_jpeg_ext(const char *s)
+{
+    if (!s || !s[0])
+        return false;
+    const char *dot = strrchr(s, '.');
+    if (!dot)
+        return false;
+    const char *e = dot + 1;
+    if (!e[0])
+        return false;
+    return !strncasecmp(e, "jpg", 3) || !strncasecmp(e, "jpeg", 4);
+}
+
 void thumbs_init(void)
 {
     s_tj = tjInitDecompress();
@@ -92,17 +105,23 @@ bool thumb_get(int post, C3D_Tex **tex, const Tex3DS_SubTexture **sub)
 static void build_url(int post, char *out, int outsz)
 {
     Post *p = &posts[post];
-
-    /* Prefer the full-size sample when available; e621 and similar APIs expose
-       a sample URL that is much larger than the preview thumbnail, while older
-       boards may omit it. Only fall back to preview/file when necessary. */
     const char *cand = NULL;
-    if (p->sample_ok && p->sample[0])
+
+    /* turbojpeg can decode JPEGs, but not PNG/WebP/other e621 variants.
+       Prefer JPEG-friendly URLs; fall back to the last-resort preview if it is
+       all we have. */
+    if (p->sample_ok && p->sample[0] && has_jpeg_ext(p->sample))
         cand = p->sample;
-    else if (p->file[0])
+    else if (p->preview[0] && has_jpeg_ext(p->preview))
+        cand = p->preview;
+    else if (p->file[0] && has_jpeg_ext(p->file))
         cand = p->file;
     else if (p->preview[0])
         cand = p->preview;
+    else if (p->sample[0])
+        cand = p->sample;
+    else if (p->file[0])
+        cand = p->file;
 
     if (!cand || !cand[0]) {
         snprintf(out, outsz,
