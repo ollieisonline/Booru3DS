@@ -45,7 +45,14 @@ static bool is_jpeg_url(const char *s)
     const char *ext = dot + 1;
     if (!ext[0])
         return false;
-    return !strcasecmp(ext, "jpg") || !strcasecmp(ext, "jpeg");
+
+    char a = ext[0];
+    char b = ext[1];
+    if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+    if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+
+    return (a == 'j' && b == 'p' && ext[2] == 'g' && ext[3] == 0) ||
+           (a == 'j' && b == 'p' && ext[2] == 'e' && ext[3] == 'g' && ext[4] == 0);
 }
 
 static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
@@ -62,7 +69,10 @@ static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
             if (sx >= sw) sx = sw - 1;
             const u8 *p = src + (sy * sw + sx) * 4;
             u8 *q = dst + (y * dw + x) * 4;
-            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+            q[0] = p[0];
+            q[1] = p[1];
+            q[2] = p[2];
+            q[3] = p[3];
         }
     }
     return true;
@@ -70,7 +80,7 @@ static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
 
 void bigview_init(void)
 {
-    /* stb_image handles PNG/JPEG; no turbojpeg init needed */
+    /* stb_image handles PNG and JPEG */
 }
 
 void bigview_exit(void)
@@ -136,6 +146,7 @@ static const char *pick_image_candidate(const Post *p)
         return p->file;
     if (p->preview[0] && is_jpeg_url(p->preview))
         return p->preview;
+
     if (p->sample_ok && p->sample[0])
         return p->sample;
     if (p->file[0])
@@ -144,6 +155,7 @@ static const char *pick_image_candidate(const Post *p)
         return p->preview;
     if (p->image[0])
         return p->image;
+
     return NULL;
 }
 
@@ -164,7 +176,6 @@ static void build_url(int post, char *out, int outsz)
         snprintf(out, outsz, "%s", cand);
 }
 
-/* Decode any common booru image type; this is what fixes e621 support. */
 static bool decode_big(u8 *data, u32 sz, C3D_Tex *tex, Tex3DS_SubTexture *sub)
 {
     int w = 0, h = 0, ch = 0;
@@ -225,6 +236,7 @@ void bigview_pump(void)
             C3D_TexDelete(&s_big.tex);
             s_big.ready = false;
         }
+
         char url[512];
         build_url(s_big.want, url, sizeof(url));
         if (!url[0]) {
@@ -232,6 +244,7 @@ void bigview_pump(void)
             s_big.retry_at = s_frame;
             return;
         }
+
         s_big.dl = dl_start(url, false);
         if (!s_big.dl) {
             s_big.failed = true;
@@ -248,16 +261,19 @@ void bigview_pump(void)
             long code = dl_code(s_big.dl);
             u8 *buf = (u8 *)dl_buf(s_big.dl);
             u32 sz = dl_size(s_big.dl);
+
             bool ok = sz >= 16 && decode_big(buf, sz, &s_big.tex, &s_big.sub);
-            if (ok) {
+
+            if (ok)
                 s_err[0] = 0;
-            } else {
+            else
                 snprintf(s_err, sizeof(s_err), "%s (http %ld%s)",
                          dl_err(s_big.dl), code,
                          sz < 16 ? ", empty" : ", decode failed");
-            }
+
             dl_abort(s_big.dl);
             s_big.dl = NULL;
+
             s_big.post = ok ? s_big.fetching : -1;
             s_big.ready = ok;
             s_big.failed = !ok;
