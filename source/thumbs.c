@@ -18,7 +18,7 @@
 #define THUMB_MAX_DIM  112
 #define THUMB_MAX_EDGE 128
 #define MAX_THUMBS     12
-#define THUMB_CONCURRENT    2
+#define THUMB_CONCURRENT    1
 #define THUMB_RETRY_FRAMES  300
 #define THUMB_MAX_TRIES     3
 
@@ -49,7 +49,14 @@ static bool is_jpeg_url(const char *s)
     const char *ext = dot + 1;
     if (!ext[0])
         return false;
-    return !strcasecmp(ext, "jpg") || !strcasecmp(ext, "jpeg");
+
+    char a = ext[0];
+    char b = ext[1];
+    if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+    if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+
+    return (a == 'j' && b == 'p' && ext[2] == 'g' && ext[3] == 0) ||
+           (a == 'j' && b == 'p' && ext[2] == 'e' && ext[3] == 'g' && ext[4] == 0);
 }
 
 static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
@@ -66,7 +73,10 @@ static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
             if (sx >= sw) sx = sw - 1;
             const u8 *p = src + (sy * sw + sx) * 4;
             u8 *q = dst + (y * dw + x) * 4;
-            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+            q[0] = p[0];
+            q[1] = p[1];
+            q[2] = p[2];
+            q[3] = p[3];
         }
     }
     return true;
@@ -74,7 +84,7 @@ static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
 
 void thumbs_init(void)
 {
-    /* stb_image handles PNG/JPEG; no turbojpeg init needed */
+    /* stb_image handles PNG and JPEG */
 }
 
 void thumbs_exit(void)
@@ -117,6 +127,7 @@ static const char *pick_image_candidate(const Post *p)
         return p->file;
     if (p->preview[0] && is_jpeg_url(p->preview))
         return p->preview;
+
     if (p->sample_ok && p->sample[0])
         return p->sample;
     if (p->file[0])
@@ -125,6 +136,7 @@ static const char *pick_image_candidate(const Post *p)
         return p->preview;
     if (p->image[0])
         return p->image;
+
     return NULL;
 }
 
@@ -313,6 +325,7 @@ void thumbs_update(int cursor)
         Slot *s = &s_slots[i];
         if (s->st != T_ACTIVE || !s->dl)
             continue;
+
         int r = dl_pump(s->dl);
         if (r == DL_ERR) {
             dl_abort(s->dl);
@@ -322,15 +335,20 @@ void thumbs_update(int cursor)
             s->tries++;
             continue;
         }
+
         if (r != DL_DONE || decoded)
             continue;
+
         decoded = true;
         u8 *buf = (u8 *)dl_buf(s->dl);
         u32 sz = dl_size(s->dl);
+
         bool ok = sz >= 16 && decode_thumb(buf, sz, &s->tex, &s->sub);
+
         dl_abort(s->dl);
         s->dl = NULL;
         s->st = ok ? T_READY : T_FAIL;
+
         if (!ok) {
             s->stamp = s_frame;
             s->tries++;
