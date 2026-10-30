@@ -5,13 +5,13 @@
 #include <3ds.h>
 #include <citro3d.h>
 #include <tex3ds.h>
-#include <turbojpeg.h>
 
 #include "net.h"
 #include "posts.h"
 #include "imgtex.h"
 #include "scaledec.h"
 #include "bigview.h"
+#include "stb_image.h"
 
 #define BIG_MAX_W 400
 #define BIG_MAX_H 240
@@ -32,22 +32,37 @@ static struct
 } s_big = { -1, -1, -1, false, false, 0, NULL, {}, {} };
 
 static u32 s_frame = 1;
-static tjhandle s_tj;
 static char s_err[192] = "";
 const char *g_big_err = s_err;
 
+static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
+                                int dw, int dh, u8 *dst)
+{
+    if (!src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || !dst)
+        return false;
+
+    for (int y = 0; y < dh; y++) {
+        int sy = (y * sh) / dh;
+        if (sy >= sh) sy = sh - 1;
+        for (int x = 0; x < dw; x++) {
+            int sx = (x * sw) / dw;
+            if (sx >= sw) sx = sw - 1;
+            const u8 *p = src + (sy * sw + sx) * 4;
+            u8 *q = dst + (y * dw + x) * 4;
+            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+        }
+    }
+    return true;
+}
+
 void bigview_init(void)
 {
-    s_tj = tjInitDecompress();
+    /* stb_image handles PNG/JPEG; no turbojpeg init needed */
 }
 
 void bigview_exit(void)
 {
     bigview_reset();
-    if (s_tj) {
-        tjDestroy(s_tj);
-        s_tj = NULL;
-    }
 }
 
 void bigview_reset(void)
@@ -70,7 +85,7 @@ void bigview_abort(void)
     if (s_big.dl) {
         dl_abort(s_big.dl);
         s_big.dl = NULL;
-        s_big.failed = false; /* retry when re-requested */
+        s_big.failed = false;
     }
 }
 
@@ -78,9 +93,6 @@ void bigview_request(int post)
 {
     if (s_big.want == post)
         return;
-    /* if a download is in flight, coalesce: just update want, let it
-       finish and the next pump will start the new one. Avoids abort churn
-       on mass touches. */
     if (s_big.dl) {
         s_big.want = post;
         s_big.failed = false;
@@ -107,14 +119,16 @@ static void build_url(int post, char *out, int outsz)
 {
     Post *p = &posts[post];
 
-    /* Only trust sample_url when the provider says it really is a sample.
-       safebooru fills it in even for sample:false, where it points at the
-       full original - fetching that to paint a 400x240 area is both far too
-       slow and too big to scale-decode, and it used to surface as
-       "http 200" failures on the top screen. */
-    const char *cand = (p->sample_ok && p->sample[0]) ? p->sample : NULL;
-    if (!cand)
-        cand = p->preview[0] ? p->preview : p->file;
+    const char *cand = NULL;
+
+    if (p->sample_ok && p->sample[0])
+        cand = p->sample;
+    else if (p->file[0])
+        cand = p->file;
+    else if (p->preview[0])
+        cand = p->preview;
+    else if (p->image[0])
+        cand = p->image;
 
     if (!cand || !cand[0]) {
         out[0] = 0;
@@ -128,31 +142,31 @@ static void build_url(int post, char *out, int outsz)
         snprintf(out, outsz, "%s", cand);
 }
 
-/* largest supported downscale fitting the top screen budget */
-static bool decode_big(u8 *jpg, u32 sz, C3D_Tex *tex, Tex3DS_SubTexture *sub)
+/* Decode any common booru image type; this is what fixes e621 support. */
+static bool decode_big(u8 *data, u32 sz, C3D_Tex *tex, Tex3DS_SubTexture *sub)
 {
-    if (!s_tj)
-        return false;
-
-    int W = 0, H = 0;
-    if (tjDecompressHeader(s_tj, jpg, sz, &W, &H) != 0 || W <= 0 || H <= 0)
-        return false;
-
-    int dw = 0, dh = 0;
-    if (!scale_fit(W, H, BIG_MAX_W, BIG_MAX_H, &dw, &dh))
-        return false;
-
-    /* sized to the actual decode rather than the worst case, and freed
-       straight after: a fixed 384KB scratch in BSS is worth having back
-       on the heap the rest of the time */
-    u8 *rgba = (u8 *)malloc((size_t)dw * dh * 4);
+    int w = 0, h = 0, ch = 0;
+    unsigned char *rgba = stbi_load_from_memory(data, (int)sz, &w, &h, &ch, 4);
     if (!rgba)
         return false;
 
-    bool ok = tjDecompress2(s_tj, jpg, sz, rgba, dw, 0, dh, TJPF_RGBA,
-                            TJFLAG_FASTDCT) == 0 &&
-             imgtex_make(tex, sub, rgba, dw, dh);
-    free(rgba);
+    int dw = 0, dh = 0;
+    if (!scale_fit(w, h, BIG_MAX_W, BIG_MAX_H, &dw, &dh)) {
+        stbi_image_free(rgba);
+        return false;
+    }
+
+    u8 *resized = (u8 *)malloc((size_t)dw * dh * 4);
+    if (!resized) {
+        stbi_image_free(rgba);
+        return false;
+    }
+
+    bool ok = resize_rgba_nearest(rgba, w, h, dw, dh, resized) &&
+              imgtex_make(tex, sub, resized, dw, dh);
+
+    free(resized);
+    stbi_image_free(rgba);
     return ok;
 }
 
@@ -178,18 +192,12 @@ void bigview_pump(void)
     if (post_count <= 0 || s_big.want < 0 || s_big.want >= post_count)
         return;
 
-    /* a failure is not permanent: give it a few seconds and try again,
-       the same way thumbnails do */
     if (s_big.failed && s_big.want != s_big.post &&
         s_frame - s_big.retry_at >= BIG_RETRY_FRAMES) {
         s_big.failed = false;
         s_err[0] = 0;
     }
 
-    /* Start a fetch whenever what we hold is not what the cursor wants.
-       That includes the case where a finished transfer is now stale
-       because a request was coalesced onto it - otherwise the texture
-       for the old post would sit there and block its own replacement. */
     if (!s_big.dl && !s_big.failed && s_big.want != s_big.post) {
         if (s_big.ready) {
             C3D_TexDelete(&s_big.tex);
@@ -218,21 +226,16 @@ void bigview_pump(void)
             long code = dl_code(s_big.dl);
             u8 *buf = (u8 *)dl_buf(s_big.dl);
             u32 sz = dl_size(s_big.dl);
-            bool ok = sz >= 16 &&
-                      decode_big(buf, sz, &s_big.tex, &s_big.sub);
+            bool ok = sz >= 16 && decode_big(buf, sz, &s_big.tex, &s_big.sub);
             if (ok) {
                 s_err[0] = 0;
             } else {
                 snprintf(s_err, sizeof(s_err), "%s (http %ld%s)",
                          dl_err(s_big.dl), code,
-                         sz < 16 ? ", empty" : "too large");
+                         sz < 16 ? ", empty" : ", decode failed");
             }
             dl_abort(s_big.dl);
             s_big.dl = NULL;
-            /* credit the texture to the post this transfer was started
-               for, not to want: a request that arrived mid-flight moved
-               want on, and attributing these bytes to it would paint the
-               previous post's image under the new cursor */
             s_big.post = ok ? s_big.fetching : -1;
             s_big.ready = ok;
             s_big.failed = !ok;
