@@ -216,39 +216,92 @@ static const char *parse_object(const char *ob, Post *post)
         else if (!strcmp(key, "sample_url")) p = jval(p, post->sample, sizeof(post->sample));
         else if (!strcmp(key, "file")) p = parse_url_object(p, post->file, sizeof(post->file), NULL);
         else if (!strcmp(key, "file_url")) p = jval(p, post->file, sizeof(post->file));
-        else p = jskip(p);
+        else if (!strcmp(key, "posts")) {
+            /* e621 search replies wrap the array in a top-level object.
+               Parse the post array in place and stop here; the array is
+               handled by parse_posts() before we return to the caller. */
+            p = jskip(p);
+        } else p = jskip(p);
     }
+}
+
+static const char *parse_posts_array(const char *p, int *count)
+{
+    p = skip_ws(p);
+    if (*p != '[')
+        return p;
+    p++;
+
+    for (;;) {
+        p = skip_ws(p);
+        if (*p == ']')
+            return p + 1;
+        if (*p != '{') {
+            p = jskip(p);
+            continue;
+        }
+
+        Post tmp;
+        const char *end = parse_object(p, &tmp);
+        if (end <= p) {
+            p++;
+            continue;
+        }
+
+        if (tmp.file[0] || tmp.image[0] || tmp.id) {
+            if (*count < MAX_POSTS)
+                posts[(*count)++] = tmp;
+            else
+                break;
+        }
+
+        p = end;
+        p = skip_ws(p);
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p == ']')
+            return p + 1;
+    }
+
+    return p;
 }
 
 int parse_posts(char *json)
 {
     post_count = 0;
     const char *p = json;
-    Post tmp;
 
-    while (*p && post_count < MAX_POSTS) {
-        const char *ob = strchr(p, '{');
-        if (!ob)
-            break;
+    if (!p)
+        return 0;
 
-        const char *end = parse_object(ob, &tmp);
-        if (end <= ob) { /* unreadable: step past this brace and retry */
-            p = ob + 1;
-            continue;
-        }
-
-        if (tmp.file[0] || tmp.image[0] || tmp.id) {
-            posts[post_count++] = tmp;
-            p = end; /* consumed */
-        } else {
-            /* No image and no id, so this is a container rather than a
-               post - the API envelope the results are nested in. Keep
-               looking from just inside it instead of skipping past the
-               whole thing, or every post would be missed. */
-            p = ob + 1;
+    /* e621 search responses are an envelope object with a "posts" array. */
+    char *posts_key = strstr(json, "\"posts\"");
+    if (posts_key) {
+        const char *arr = posts_key + strlen("\"posts\"");
+        while (*arr && *arr != '[')
+            arr++;
+        if (*arr == '[') {
+            parse_posts_array(arr, &post_count);
+            return post_count;
         }
     }
+
+    /* Also accept bare JSON arrays or single post object responses. */
+    p = skip_ws(p);
+    if (*p == '[') {
+        parse_posts_array(p, &post_count);
+        return post_count;
+    }
+
+    if (*p == '{') {
+        Post tmp;
+        const char *end = parse_object(p, &tmp);
+        if (end > p && (tmp.file[0] || tmp.image[0] || tmp.id)) {
+            posts[post_count++] = tmp;
+        }
+    }
+
     return post_count;
 }
-
-																																																																																																																																																																																																																																																	
