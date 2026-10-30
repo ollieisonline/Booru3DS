@@ -14,6 +14,7 @@
 #include "imgtex.h"
 #include "scaledec.h"
 #include "thumbs.h"
+#include "stb_image.h"
 
 #define THUMB_MAX_DIM  112
 #define THUMB_MAX_EDGE 128 /* must match the decode scratch below */
@@ -57,6 +58,26 @@ static bool has_jpeg_ext(const char *s)
     if (!e[0])
         return false;
     return !strncasecmp(e, "jpg", 3) || !strncasecmp(e, "jpeg", 4);
+}
+
+static bool resize_rgba_nearest(const u8 *src, int sw, int sh,
+                                int dw, int dh, u8 *dst)
+{
+    if (!src || sw <= 0 || sh <= 0 || dw <= 0 || dh <= 0 || !dst)
+        return false;
+
+    for (int y = 0; y < dh; y++) {
+        int sy = (y * sh) / dh;
+        if (sy >= sh) sy = sh - 1;
+        for (int x = 0; x < dw; x++) {
+            int sx = (x * sw) / dw;
+            if (sx >= sw) sx = sw - 1;
+            const u8 *p = src + (sy * sw + sx) * 4;
+            u8 *q = dst + (y * dw + x) * 4;
+            q[0] = p[0]; q[1] = p[1]; q[2] = p[2]; q[3] = p[3];
+        }
+    }
+    return true;
 }
 
 void thumbs_init(void)
@@ -107,21 +128,16 @@ static void build_url(int post, char *out, int outsz)
     Post *p = &posts[post];
     const char *cand = NULL;
 
-    /* turbojpeg can decode JPEGs, but not PNG/WebP/other e621 variants.
-       Prefer JPEG-friendly URLs; fall back to the last-resort preview if it is
-       all we have. */
-    if (p->sample_ok && p->sample[0] && has_jpeg_ext(p->sample))
-        cand = p->sample;
-    else if (p->preview[0] && has_jpeg_ext(p->preview))
-        cand = p->preview;
-    else if (p->file[0] && has_jpeg_ext(p->file))
-        cand = p->file;
-    else if (p->preview[0])
-        cand = p->preview;
-    else if (p->sample[0])
+    /* e621 and other providers may return PNG/JPEG data; do not force a
+       JPEG-only URL because the decode logic below handles PNG as well. */
+    if (p->sample_ok && p->sample[0])
         cand = p->sample;
     else if (p->file[0])
         cand = p->file;
+    else if (p->preview[0])
+        cand = p->preview;
+    else if (p->image[0])
+        cand = p->image;
 
     if (!cand || !cand[0]) {
         snprintf(out, outsz,
@@ -138,27 +154,31 @@ static void build_url(int post, char *out, int outsz)
         snprintf(out, outsz, "%s", cand);
 }
 
-static bool decode_thumb(u8 *jpg, u32 sz, C3D_Tex *tex, Tex3DS_SubTexture *sub)
+static bool decode_thumb(u8 *data, u32 sz, C3D_Tex *tex, Tex3DS_SubTexture *sub)
 {
-    if (!s_tj)
+    int w = 0, h = 0, ch = 0;
+    unsigned char *rgba = stbi_load_from_memory(data, (int)sz, &w, &h, &ch, 4);
+    if (!rgba)
         return false;
 
-    /* decoded thumb never exceeds 112x112 (static scratch, no heap churn) */
-    static u8 s_rgba[THUMB_MAX_EDGE * THUMB_MAX_EDGE * 4];
-
-    bool ok = false;
-    int W = 0, H = 0;
-    if (tjDecompressHeader(s_tj, jpg, sz, &W, &H) == 0 && W > 0 && H > 0) {
-        int dw = 0, dh = 0;
-        /* refuses rather than decoding at 1/1, which would overrun the
-           scratch above - see scale_fit() */
-        if (scale_fit(W, H, THUMB_MAX_DIM, THUMB_MAX_DIM, &dw, &dh) &&
-            dw <= THUMB_MAX_EDGE && dh <= THUMB_MAX_EDGE &&
-            tjDecompress2(s_tj, jpg, sz, s_rgba, dw, 0, dh, TJPF_RGBA,
-                          TJFLAG_FASTDCT) == 0)
-            ok = imgtex_make565(tex, sub, s_rgba, dw, dh);
+    int dw = 0, dh = 0;
+    if (!scale_fit(w, h, THUMB_MAX_DIM, THUMB_MAX_DIM, &dw, &dh) ||
+        dw > THUMB_MAX_EDGE || dh > THUMB_MAX_EDGE) {
+        stbi_image_free(rgba);
+        return false;
     }
 
+    u8 *resized = (u8 *)malloc((size_t)dw * dh * 4);
+    if (!resized) {
+        stbi_image_free(rgba);
+        return false;
+    }
+
+    bool ok = resize_rgba_nearest(rgba, w, h, dw, dh, resized) &&
+              imgtex_make565(tex, sub, resized, dw, dh);
+
+    free(resized);
+    stbi_image_free(rgba);
     return ok;
 }
 
