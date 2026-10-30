@@ -10,7 +10,7 @@ typedef struct
     const char *host; /* base host for relative paths */
 } Provider;
 
-#define PV_COUNT 2
+#define PV_COUNT 1
 extern const Provider g_providers[PV_COUNT];
 
 /* active provider's host / display name; always return valid strings */
@@ -37,3 +37,5 @@ void url_encode(const char *in, char *out, int outsz);
 /* tear down the shared multi handle and curl globals. Every dl_t must
    already have been aborted. */
 void net_exit(void);
+
+																																																																																																																																																																									

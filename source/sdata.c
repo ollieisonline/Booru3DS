@@ -34,7 +34,6 @@ void sdata_load(void)
         } else if (!strncmp(line, "camwarn=", 8)) {
             s.camwarn = atoi(line + 8) != 0;
         } else if (!strncmp(line, "hist=", 5) && s.hist_n < SDATA_HIST_MAX) {
-            /* skip blank entries: an empty row is not a search */
             if (!line[5])
                 continue;
             size_t vl = strlen(line + 5);
@@ -47,8 +46,7 @@ void sdata_load(void)
     }
     fclose(f);
 
-    /* clamp to a valid provider index (crash-proof against corrupt saves) */
-    if (s.provider < 0 || s.provider >= 2)
+    if (s.provider < 0 || s.provider >= PV_COUNT)
         s.provider = 0;
 }
 
@@ -63,7 +61,7 @@ void sdata_pump(void)
 
     FILE *f = fopen(SDATA_PATH, "w");
     if (!f)
-        return; /* no SD: settings are best-effort, do not spin on it */
+        return;
     fprintf(f, "provider=%d\n", s.provider);
     fprintf(f, "camwarn=%d\n", s.camwarn ? 1 : 0);
     for (int i = 0; i < s.hist_n; i++)
@@ -119,7 +117,6 @@ void sdata_hist_push(const char *tags)
     if (!tags || !tags[0])
         return;
 
-    /* move existing duplicate to front */
     int found = -1;
     for (int i = 0; i < s.hist_n; i++) {
         if (!strcmp(s.hist[i], tags)) {
@@ -137,7 +134,6 @@ void sdata_hist_push(const char *tags)
         return;
     }
 
-    /* shift down, cap at SDATA_HIST_MAX */
     if (s.hist_n < SDATA_HIST_MAX)
         s.hist_n++;
     for (int i = s.hist_n - 1; i > 0; i--)
@@ -147,3 +143,5 @@ void sdata_hist_push(const char *tags)
 
     s_dirty = true;
 }
+
+																																																																																																																																																										

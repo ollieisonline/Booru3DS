@@ -126,6 +126,51 @@ static const char *juint(const char *p, unsigned int *out)
     return p;
 }
 
+static const char *parse_url_object(const char *ob, char *out, int outsz, bool *has_value)
+{
+    if (out && outsz > 0)
+        out[0] = 0;
+    if (has_value)
+        *has_value = true;
+    if (*ob != '{')
+        return ob;
+    ob++;
+
+    const char *p = ob;
+    for (;;) {
+        p = skip_ws(p);
+        if (*p == '}')
+            return p + 1;
+        if (!*p)
+            return p;
+        if (*p == ',') {
+            p++;
+            continue;
+        }
+        if (*p != '"')
+            return p;
+
+        char key[48];
+        p = jstr(p, key, sizeof(key));
+        p = skip_ws(p);
+        if (*p != ':')
+            return p;
+        p++;
+        p = skip_ws(p);
+
+        if (!strcmp(key, "url"))
+            p = jval(p, out, outsz);
+        else if (!strcmp(key, "has")) {
+            bool has = true;
+            p = jbool(p, &has);
+            if (has_value)
+                *has_value = has;
+        } else {
+            p = jskip(p);
+        }
+    }
+}
+
 /* Parse the object at ob into post. Returns a pointer past its closing
    brace, or ob itself if there is no object there. */
 static const char *parse_object(const char *ob, Post *post)
@@ -159,12 +204,17 @@ static const char *parse_object(const char *ob, Post *post)
         p = skip_ws(p);
 
         if (!strcmp(key, "id")) p = juint(p, &post->id);
-        else if (!strcmp(key, "sample")) p = jbool(p, &post->sample_ok);
-        else if (!strcmp(key, "has_sample")) p = jbool(p, &post->sample_ok);
+        else if (!strcmp(key, "sample")) {
+            bool has = true;
+            p = parse_url_object(p, post->sample, sizeof(post->sample), &has);
+            post->sample_ok = has;
+        } else if (!strcmp(key, "has_sample")) p = jbool(p, &post->sample_ok);
         else if (!strcmp(key, "directory")) p = jval(p, post->directory, sizeof(post->directory));
         else if (!strcmp(key, "image")) p = jval(p, post->image, sizeof(post->image));
+        else if (!strcmp(key, "preview")) p = parse_url_object(p, post->preview, sizeof(post->preview), NULL);
         else if (!strcmp(key, "preview_url")) p = jval(p, post->preview, sizeof(post->preview));
         else if (!strcmp(key, "sample_url")) p = jval(p, post->sample, sizeof(post->sample));
+        else if (!strcmp(key, "file")) p = parse_url_object(p, post->file, sizeof(post->file), NULL);
         else if (!strcmp(key, "file_url")) p = jval(p, post->file, sizeof(post->file));
         else p = jskip(p);
     }
@@ -187,7 +237,7 @@ int parse_posts(char *json)
             continue;
         }
 
-        if (tmp.image[0] || tmp.id) {
+        if (tmp.file[0] || tmp.image[0] || tmp.id) {
             posts[post_count++] = tmp;
             p = end; /* consumed */
         } else {
@@ -200,3 +250,5 @@ int parse_posts(char *json)
     }
     return post_count;
 }
+
+																																																																																																																																																																																																																																																	

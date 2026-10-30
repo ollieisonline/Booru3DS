@@ -20,8 +20,7 @@
 #define DL_MAX_BUF (4 * 1024 * 1024)
 
 const Provider g_providers[PV_COUNT] = {
-    { "safebooru.org", "safebooru.org" },
-    { "konachan.net",  "konachan.net"  },
+    { "e621.net", "e621.net" },
 };
 
 static int provider_index(void)
@@ -291,3 +290,5 @@ void url_encode(const char *in, char *out, int outsz)
     if (outsz > 0)
         out[o] = 0;
 }
+
+																																																																																																																																																																																										

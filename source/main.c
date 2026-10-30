@@ -28,11 +28,7 @@ Screen screen = SCR_HOME;
 
 char g_status[256] = "";
 
-/* API providers: safebooru (gelbooru dapi) works from emulators with a PC
-   network stack, but its CDN 403-blocks real 3DS TLS. konachan.net serves
-   the same style of content and accepts the 3DS's requests. The table
-   (names + hosts) lives in net.c so every URL builder resolves relative
-   paths against the site that is actually selected. */
+/* API providers: this build is intentionally e621-only. */
 int g_provider = 0;
 bool g_save_prompt = false;
 bool g_about_open = false;
@@ -65,14 +61,9 @@ static int do_search(void)
     render_frame();
 
     url_encode(current_tags, enc, sizeof(enc));
-    if (g_provider == 0)
-        snprintf(url, sizeof(url),
-                 "https://safebooru.org/index.php?page=dapi&s=post&q=index"
-                 "&json=1&limit=%d&tags=%s", MAX_POSTS, enc);
-    else
-        snprintf(url, sizeof(url),
-                 "https://konachan.net/post.json?limit=%d&tags=%s",
-                 MAX_POSTS, enc);
+    snprintf(url, sizeof(url),
+             "https://e621.net/posts.json?limit=%d&tags=%s",
+             MAX_POSTS, enc);
 
     /* the search response is JSON, so it is the one transfer worth
        asking for compressed */
@@ -196,18 +187,11 @@ static void move_cursor(int delta)
     if (c < 0) c = 0;
     if (c > post_count - 1) c = post_count - 1;
     if (c != cursor) {
-        /* Move immediately. Waiting for all twelve thumbnails of the page
-           we are leaving made paging feel broken, and it bought nothing:
-           the LRU cache already keeps them, so coming back is instant,
-           and thumbs that are still in flight simply keep filling in. */
         cursor = c;
         bigview_request(cursor);
     }
 }
 
-/* The Circle Pad and C-Stick report every frame, so they need their own
-   repeat throttle; the D-Pad is already edge-triggered via hidKeysDown()
-   and throttling it would swallow legitimate presses. */
 static u32 s_lastMove = 0;
 
 static void move_cursor_analog(int delta)
@@ -218,8 +202,6 @@ static void move_cursor_analog(int delta)
     move_cursor(delta);
 }
 
-/* libcurl resolves DNS via newlib's resolver, which needs /etc/resolv.conf
-   on the SD root (httpc did this inside the system module instead) */
 static void net_dns_init(void)
 {
     FILE *f = fopen("/etc/resolv.conf", "r");
@@ -235,10 +217,6 @@ static void net_dns_init(void)
     fclose(f);
 }
 
-/* BSD socket service for libcurl - 256KB covers the per-connection socket
-   structs for every transfer that can be in flight at once (2 thumbnails
-   plus the big view or a save), and saves 256KB of heap on OLD3DS
-   (64MB total) */
 #define SOC_ALIGN 0x1000
 #define SOC_SIZE  0x40000
 static u32 *s_soc = NULL;
@@ -259,12 +237,6 @@ static bool net_soc_init(void)
     return true;
 }
 
-/* every init step is individually optional, so teardown has to be safe
-   to run from a partially-built state - that is what the flags are for */
-/* The HOME menu suspends the app rather than killing it, so aptMainLoop()
-   keeps returning true and every static in the process survives - but the
-   ndsp queue does not. Without this hook the audio modules never learn
-   about it and playback comes back distorted after re-entry. */
 static void on_apt_hook(APT_HookType hook, void *param)
 {
     (void)param;
@@ -288,8 +260,6 @@ static bool s_romfs_ok, s_c3d_ok, s_c2d_ok;
 
 static void teardown(void)
 {
-    /* stop the hook first: it must not fire into audio modules that are
-       about to be torn down */
     aptUnhook(&s_apt_cookie);
 
     if (s_search_dl) {
@@ -315,7 +285,7 @@ static void teardown(void)
         romfsExit();
         s_romfs_ok = false;
     }
-    net_exit(); /* after every dl_t has been aborted */
+    net_exit();
     if (s_soc_ready) {
         socExit();
         s_soc_ready = false;
@@ -363,8 +333,6 @@ int main(void)
     if (!bgm_play("romfs:/bgm.ogg"))
         snprintf(g_status, sizeof(g_status), "bgm not loaded");
 
-    /* after the audio modules exist, so the first suspend cannot race
-       their initialisation */
     aptHook(&s_apt_cookie, on_apt_hook, NULL);
 
     sdata_load();
@@ -379,12 +347,10 @@ int main(void)
         u32 kDown = hidKeysDown();
 
         if (g_camwarn_open) {
-            /* first camera-install notice: anything dismisses it */
             if (kDown & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_START |
                          KEY_SELECT | KEY_TOUCH))
                 g_camwarn_open = false;
         } else if (g_save_prompt) {
-            /* save-destination dialog */
             if (kDown & KEY_A) {
                 g_save_prompt = false;
                 save_request(cursor, SAVE_DEST_BOORU);
@@ -395,12 +361,10 @@ int main(void)
                 g_save_prompt = false;
             }
         } else if (g_about_open) {
-            /* about popup: any button or tap dismisses it */
             if (kDown & (KEY_A | KEY_B | KEY_X | KEY_Y | KEY_START |
                          KEY_SELECT | KEY_TOUCH))
                 g_about_open = false;
         } else if (g_hist_open) {
-            /* search-history overlay */
             int n = sdata_hist_count();
             if (n > 0) {
                 if ((kDown & KEY_DUP) && g_hist_sel > 0)
@@ -424,9 +388,6 @@ int main(void)
             if (kDown & KEY_TOUCH) {
                 touchPosition tp;
                 hidTouchRead(&tp);
-                /* tap a row to search it; anywhere else closes.
-                   geometry must mirror draw_hist_overlay(): rows start at
-                   panel.y + 34, 18px pitch */
                 float ry0 = 30.0f + 34.0f;
                 int row = (int)((tp.py - ry0) / 18.0f);
                 if (tp.px >= 20 && tp.px <= 300 && row >= 0 && row < n &&
@@ -454,8 +415,6 @@ int main(void)
             if (kDown & KEY_X)
                 prompt_search();
 
-            /* like the other modals, history stays shut during a search:
-               picking an entry while one is in flight is a silent no-op */
             if ((kDown & KEY_Y) && !g_searching && sdata_hist_count() > 0) {
                 g_hist_sel = 0;
                 g_hist_open = true;
@@ -465,7 +424,7 @@ int main(void)
                 go_home();
 
             if (kDown & KEY_SELECT) {
-                g_provider = (g_provider + 1) % PV_COUNT;
+                g_provider = 0;
                 sdata_set_provider(g_provider);
                 current_tags[0] = 0;
                 screen = SCR_HOME;
@@ -495,7 +454,6 @@ int main(void)
             if (kDown & KEY_R)
                 move_cursor(PAGE_SIZE);
 
-            /* Circle Pad (and New3DS C-Stick) */
             circlePosition cpos;
             hidCircleRead(&cpos);
             if (abs(cpos.dx) > 55 || abs(cpos.dy) > 55) {
@@ -520,7 +478,6 @@ int main(void)
             }
         }
 
-        /* pump async search download */
         if (s_search_dl) {
             int r = dl_pump(s_search_dl);
             if (r == DL_DONE) {
@@ -582,7 +539,7 @@ int main(void)
             g_camwarn_open = true;
             sfx_alert();
         }
-        sdata_pump(); /* flush settings off the input/critical path */
+        sdata_pump();
         bgm_update();
         render_frame();
         gspWaitForVBlank();
@@ -595,3 +552,5 @@ fail:
     teardown();
     return 1;
 }
+
+																																																																																																																																																																																											
